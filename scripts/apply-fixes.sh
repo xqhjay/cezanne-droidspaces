@@ -72,40 +72,31 @@ if [ -f "$SC" ] && [ -f "$SH" ]; then
       sed -i 's|^extern char \* strcpy(char \*,const char \*);$|extern char * strcpy(char *,const char *);\nextern char * stpcpy(char *,const char *);|' "$SH"
     fi
 
-    # 实现：插在文件开头 include 之后，作为独立顶层块，
-    # 不依赖 __HAVE_ARCH_STRCPY 的嵌套条件，避免被条件编译吞掉。
-    STP_ANCHOR=$(grep -n '^#include <linux/string.h>' "$SC" | head -1 | cut -d: -f1)
-    if [ -z "$STP_ANCHOR" ]; then
-      STP_ANCHOR=$(grep -n '^#include' "$SC" | tail -1 | cut -d: -f1)
-    fi
-    if [ -z "$STP_ANCHOR" ]; then
-      echo "::error::stpcpy 注入失败（找不到 include 锚点）"
-      exit 1
-    fi
+    # 实现：追加到文件末尾。
+    # 不能插在文件开头——导出宏 EXPORT_SYMBOL 依赖 <linux/export.h>，
+    # 而该 include 在文件中部（约第 44 行），提前使用会导致
+    # "a parameter list without types is only allowed in a function definition"。
+    # 追加到末尾可确保所有 include 已生效，且不受文件末尾
+    # #ifdef CONFIG_STRING_SELFTEST ... #endif 条件块影响。
+    cat >> "$SC" <<'STPEOF'
 
-    awk -v anchor="$STP_ANCHOR" '
-      { print }
-      NR == anchor && !done {
-        print ""
-        print "#ifndef __HAVE_ARCH_STPCPY"
-        print "/**"
-        print " * stpcpy - Copy a NUL terminated string, returning pointer to its end"
-        print " * @dest: Where to copy the string to"
-        print " * @src: Where to copy the string from"
-        print " */"
-        print "char *stpcpy(char *dest, const char *src)"
-        print "{"
-        print "\twhile ((*dest = *src) != 0) {"
-        print "\t\tdest++;"
-        print "\t\tsrc++;"
-        print "\t}"
-        print "\treturn dest;"
-        print "}"
-        print "EXPORT_SYMBOL(stpcpy);"
-        print "#endif"
-        done = 1
-      }
-    ' "$SC" > "$SC.new" && mv "$SC.new" "$SC"
+#ifndef __HAVE_ARCH_STPCPY
+/**
+ * stpcpy - Copy a NUL terminated string, returning pointer to its end
+ * @dest: Where to copy the string to
+ * @src: Where to copy the string from
+ */
+char *stpcpy(char *dest, const char *src)
+{
+	while ((*dest = *src) != 0) {
+		dest++;
+		src++;
+	}
+	return dest;
+}
+EXPORT_SYMBOL(stpcpy);
+#endif
+STPEOF
 
     if grep -qE '^char \*stpcpy' "$SC"; then
       echo "[3/3] 已补充 stpcpy 实现与声明"
