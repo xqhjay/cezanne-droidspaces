@@ -1,0 +1,165 @@
+name: Build cezanne kernel (Droidspaces / IPC_NS)
+
+# 目标机型：Redmi K30 Ultra (cezanne) / MT6889 / 内核 4.14.186 (non-GKI)
+# 源码：MiCode/Xiaomi_Kernel_OpenSource @ cezanne-r-oss
+#
+# 本地已实测验证：
+#   1. cezanne_user_defconfig 可成功生成 .config
+#   2. merge_config.sh 合并片段后 CONFIG_IPC_NS=y 真实生效
+#   3. 该树产物为 Image.gz-dtb（MTK appended-DTB），不存在 dtbo.img 目标
+#   4. 写入 .scmversion 可精确复现设备版本串 4.14.186-perf-00241-g172a9693e072
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: '内核分支'
+        required: true
+        default: 'cezanne-r-oss'
+      defconfig:
+        description: 'defconfig'
+        required: true
+        default: 'cezanne_user_defconfig'
+      localversion:
+        description: '版本后缀（决定 vermagic，必须与设备一致，否则原厂 .ko 拒绝加载）'
+        required: true
+        default: '-perf-00241-g172a9693e072'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+
+    steps:
+      - name: 检出本仓库（取配置片段）
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio flex git kmod libelf-dev \
+            libssl-dev libncurses-dev rsync unzip zip zstd python3
+
+      - name: 拉取工具链（clang r416183b + gcc 4.9）
+        run: |
+          set -e
+          git clone --depth 1 -b lineage-20.0 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b \
+            "$HOME/clang"
+          git clone --depth 1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
+            "$HOME/gcc64"
+          git clone --depth 1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-gnueabi-4.9 \
+            "$HOME/gcc32" || echo "::warning::gcc32 未取到，arm32 模块可能无法完整构建（本机不需要）"
+
+          echo "CLANG_BIN=$HOME/clang/bin" >> $GITHUB_ENV
+          echo "GCC64_BIN=$HOME/gcc64/bin" >> $GITHUB_ENV
+          "$HOME/clang/bin/clang" --version | head -2
+
+      - name: 克隆内核源码
+        run: |
+          set -e
+          git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+          cd kernel
+          echo "=== HEAD ==="
+          git log --oneline -1
+          echo "=== 版本 ==="
+          grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) *=" Makefile
+
+      - name: 生成 .config 并合并 Droidspaces 片段
+        run: |
+          set -e
+          cd kernel
+          export ARCH=arm64
+          export PATH="$GCC64_BIN:$CLANG_BIN:$PATH"
+
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "${{ inputs.defconfig }}"
+
+          cp "$GITHUB_WORKSPACE/droidspaces.fragment" ./droidspaces.fragment
+          ./scripts/kconfig/merge_config.sh -O out out/.config ./droidspaces.fragment
+
+          echo "======== 关键配置校验 ========"
+          for k in SYSVIPC POSIX_MQUEUE IPC_NS NAMESPACES DEVTMPFS OVERLAY_FS; do
+            if grep -q "^CONFIG_${k}=y" out/.config; then
+              echo "  [OK] CONFIG_${k}=y"
+            else
+              echo "::error::CONFIG_${k} 未生效"
+              exit 1
+            fi
+          done
+
+          echo "======== 版本串锁定 ========"
+          echo "${{ inputs.localversion }}" > .scmversion
+          RELEASE=$(make -s O=out ARCH=arm64 kernelrelease)
+          echo "kernelrelease = ${RELEASE}"
+          if [ "${RELEASE}" != "4.14.186${{ inputs.localversion }}" ]; then
+            echo "::error::版本串不符合预期，vermagic 将与原厂模块不匹配"
+            exit 1
+          fi
+
+      - name: 编译内核
+        run: |
+          set -e
+          cd kernel
+          export ARCH=arm64
+          export PATH="$GCC64_BIN:$CLANG_BIN:$PATH"
+
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            Image.gz-dtb 2>&1 | tail -60
+
+          echo "======== 产物 ========"
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      - name: 校验产物内容（vermagic + IPC）
+        run: |
+          set -e
+          cd kernel
+          IMG=out/arch/arm64/boot/Image.gz-dtb
+          echo "=== 解压并检查 vermagic 字符串 ==="
+          gunzip -c "$IMG" > /tmp/Image.raw || cp "$IMG" /tmp/Image.raw
+          strings /tmp/Image.raw | grep -m5 "4\.14\.186" || echo "::warning::未在镜像中找到版本串（可能被压缩，属正常）"
+          echo "=== 确认内核内置 IPC namespace 相关符号 ==="
+          nm out/vmlinux 2>/dev/null | grep -ciE "ipcns|sysvipc|shmget" || true
+
+      - name: 打包 AnyKernel3
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
+          rm -rf ak3/.git ak3/README.md
+
+          cd ak3
+          # 关闭设备代号校验，避免因代号不符而中止刷机
+          sed -i 's/^do\.devicecheck=1/do.devicecheck=0/' anykernel.sh
+          sed -i 's#^kernel\.string=.*#kernel.string=Cezanne kernel for Droidspaces (SYSVIPC+IPC_NS) @ TaiXu#' anykernel.sh
+          sed -i 's#^BLOCK=.*#BLOCK=/dev/block/by-name/boot;#' anykernel.sh
+
+          echo "=== 关键行确认 ==="
+          grep -E "^do\.devicecheck=|^kernel\.string=" anykernel.sh
+          grep -nE "^BLOCK=" anykernel.sh
+
+          STAMP=$(date +%Y%m%d-%H%M)
+          zip -r9 "../droidspaces-cezanne-${STAMP}.zip" . -x ".*" -x "*/.*"
+          cd ..
+          ls -lh droidspaces-cezanne-*.zip
+          echo "ARTIFACT_ZIP=droidspaces-cezanne-${STAMP}.zip" >> $GITHUB_ENV
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-cezanne-kernel
+          path: droidspaces-cezanne-*.zip
+          if-no-files-found: error
+          retention-days: 30

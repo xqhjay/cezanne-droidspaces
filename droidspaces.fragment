@@ -1,0 +1,39 @@
+# ============================================================
+# Droidspaces 内核配置片段
+# 机型：Redmi K30 Ultra (cezanne) / MT6889 / 内核 4.14.186
+# 源码：MiCode/Xiaomi_Kernel_OpenSource @ cezanne-r-oss
+# 依据：Droidspaces Documentation/Kernel-Configuration.md
+#
+# 说明：本文件注释里刻意不写 "CONFIG_xxx=" 形式，
+#       因为 merge_config.sh 会用 grep 抓取含 CONFIG_ 的行，
+#       注释里出现该字样会被误当成请求值并打印告警。
+# ============================================================
+
+# --- 1. 根因修复：System V IPC 与 POSIX 消息队列 ---
+# 缺了这两项，IPC_NS 会被 Kconfig 依赖链强制关掉
+CONFIG_SYSCTL=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+
+# --- 2. Droidspaces 检查的目标项 ---
+CONFIG_NAMESPACES=y
+CONFIG_IPC_NS=y
+
+# --- 3. 硬件访问模式需要（原先也是缺失项）---
+CONFIG_DEVTMPFS=y
+
+# --- 4. 容器常用文件系统增强 ---
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+
+# --- 5. 可选：容器 macvlan 网络 ---
+CONFIG_MACVLAN=y
+
+# --- 6. 关闭调试信息，显著缩短云端编译时间（不影响功能）---
+# CONFIG_DEBUG_INFO is not set
+
+# --- 注意（不要开启）---
+# DEVTMPFS_MOUNT：会让内核自行挂载 devtmpfs 到 /dev，
+#   与 MTK ramdisk + init 建立的 /dev 冲突，可能干扰早期启动。
+# USER_NS：可选功能，仅在需要非特权容器 / Flatpak 时才开。
