@@ -51,12 +51,18 @@ jobs:
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
             "$HOME/gcc64"
           git clone --depth 1 -b lineage-19.1 \
-            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-gnueabi-4.9 \
-            "$HOME/gcc32" || echo "::warning::gcc32 未取到，arm32 模块可能无法完整构建（本机不需要）"
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
+            "$HOME/gcc32"
 
           echo "CLANG_BIN=$HOME/clang/bin" >> $GITHUB_ENV
           echo "GCC64_BIN=$HOME/gcc64/bin" >> $GITHUB_ENV
+          echo "GCC32_BIN=$HOME/gcc32/bin" >> $GITHUB_ENV
           "$HOME/clang/bin/clang" --version | head -2
+          "$HOME/gcc64/bin/aarch64-linux-android-gcc" --version | head -1
+          ls "$HOME/gcc32/bin" | grep -E "^arm-linux-androideabi-gcc$" || {
+            echo "::error::arm32 交叉编译器缺失，MTK 4.14 构建需要它"
+            exit 1
+          }
 
       - name: 克隆内核源码
         run: |
@@ -74,13 +80,13 @@ jobs:
           set -e
           cd kernel
           export ARCH=arm64
-          export PATH="$GCC64_BIN:$CLANG_BIN:$PATH"
+          export PATH="$GCC64_BIN:$GCC32_BIN:$CLANG_BIN:$PATH"
 
           make -j$(nproc) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             "${{ inputs.defconfig }}"
 
           cp "$GITHUB_WORKSPACE/droidspaces.fragment" ./droidspaces.fragment
@@ -98,7 +104,12 @@ jobs:
 
           echo "======== 版本串锁定 ========"
           echo "${{ inputs.localversion }}" > .scmversion
-          RELEASE=$(make -s O=out ARCH=arm64 kernelrelease)
+          RELEASE=$(make -s O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            kernelrelease)
           echo "kernelrelease = ${RELEASE}"
           if [ "${RELEASE}" != "4.14.186${{ inputs.localversion }}" ]; then
             echo "::error::版本串不符合预期，vermagic 将与原厂模块不匹配"
@@ -110,14 +121,33 @@ jobs:
           set -e
           cd kernel
           export ARCH=arm64
-          export PATH="$GCC64_BIN:$CLANG_BIN:$PATH"
+          export PATH="$GCC64_BIN:$GCC32_BIN:$CLANG_BIN:$PATH"
 
+          set +e
           make -j$(nproc) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz-dtb 2>&1 | tail -60
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            Image.gz-dtb > /tmp/build.log 2>&1
+          RC=$?
+          set -e
+
+          echo "======== 最后 40 行 ========"
+          tail -40 /tmp/build.log
+
+          if [ $RC -ne 0 ]; then
+            echo "======== 真实错误行（全部）========"
+            grep -nE "error:|fatal error:|Error [0-9]|\*\*\*" /tmp/build.log | head -60
+            echo "======== 首个错误上下文 ========"
+            FIRST=$(grep -nE "error:|fatal error:" /tmp/build.log | head -1 | cut -d: -f1)
+            if [ -n "$FIRST" ]; then
+              START=$((FIRST>25 ? FIRST-25 : 1))
+              sed -n "${START},$((FIRST+10))p" /tmp/build.log
+            fi
+            echo "::error::内核编译失败（exit $RC），详见上方错误行"
+            exit $RC
+          fi
 
           echo "======== 产物 ========"
           ls -lh out/arch/arm64/boot/Image.gz-dtb
