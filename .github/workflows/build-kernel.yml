@@ -75,6 +75,12 @@ jobs:
           echo "=== 版本 ==="
           grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) *=" Makefile
 
+      - name: 应用 MTK vendor 诊断兼容补丁
+        run: |
+          set -e
+          chmod +x scripts/apply-fixes.sh
+          ./scripts/apply-fixes.sh "$GITHUB_WORKSPACE/kernel"
+
       - name: 生成 .config 并合并 Droidspaces 片段
         run: |
           set -e
@@ -135,7 +141,6 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            KCFLAGS="-Wno-error -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Wno-format -Wno-unused-but-set-variable" \
             Image.gz-dtb > /tmp/build.log 2>&1
           RC=$?
           set -e
