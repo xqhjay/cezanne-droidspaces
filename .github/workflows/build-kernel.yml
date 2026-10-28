@@ -135,6 +135,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-error -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Wno-format -Wno-unused-but-set-variable" \
             Image.gz-dtb > /tmp/build.log 2>&1
           RC=$?
           set -e
