@@ -155,6 +155,12 @@ jobs:
           echo "=== 应用后关键项 ==="
           grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|NAMESPACES|DEVTMPFS|OVERLAY_FS)=" "$CFG"
 
+      - name: 应用内核源码补丁（mtk-vcu/ + 诊断）
+        run: |
+          set -e
+          chmod +x scripts/apply-fixes.sh
+          ./scripts/apply-fixes.sh "$GITHUB_WORKSPACE/kernel"
+
       - name: 生成 .config 并校验依赖
         run: |
           set -e
