@@ -183,13 +183,22 @@ jobs:
           rm -rf ak3/.git ak3/README.md
 
           cd ak3
-          # 关闭设备代号校验，避免因代号不符而中止刷机
-          sed -i 's/^do\.devicecheck=1/do.devicecheck=0/' anykernel.sh
-          sed -i 's#^kernel\.string=.*#kernel.string=Cezanne kernel for Droidspaces (SYSVIPC+IPC_NS) @ TaiXu#' anykernel.sh
-          sed -i 's#^BLOCK=.*#BLOCK=/dev/block/by-name/boot;#' anykernel.sh
+          # 用我们自己的 anykernel.sh 完全覆盖上游模板。
+          # 上游模板内含 Galaxy Nexus (tuna) 的示范补丁段
+          # （patch_fstab fstab.tuna / init.tuna.rc 等），
+          # 会改写 boot.img 的 init.rc 与 fstab，导致 Android 12 开机卡第一屏。
+          cp "$GITHUB_WORKSPACE/anykernel-template.sh" anykernel.sh
+
+          echo "=== 安全校验：确认不含破坏性补丁（排除注释行）==="
+          if grep -vE '^\s*#' anykernel.sh | grep -qE 'init\.tuna|fstab\.tuna|patch_fstab|replace_string|insert_line'; then
+            echo "::error::anykernel.sh 仍含破坏性模板补丁，构建中止"
+            grep -vE '^\s*#' anykernel.sh | grep -nE 'init\.tuna|fstab\.tuna|patch_fstab|replace_string|insert_line'
+            exit 1
+          fi
+          echo "OK: 无破坏性补丁（仅注释提及）"
 
           echo "=== 关键行确认 ==="
-          grep -E "^do\.devicecheck=|^kernel\.string=" anykernel.sh
+          grep -E "^do\.devicecheck=|^do\.systemless=|^kernel\.string=" anykernel.sh
           grep -nE "^BLOCK=" anykernel.sh
 
           STAMP=$(date +%Y%m%d-%H%M)
