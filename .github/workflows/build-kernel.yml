@@ -172,11 +172,23 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-androidkernel-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CROSS_COMPILE="${XCOMPILE64}"
+          export CROSS_COMPILE_ARM32="${XCOMPILE32}"
 
+          # KCFLAGS="-w" 关闭所有警告。
+          # 原因：本树 include/net/sock.h 与 include/net/route.h 硬编码了
+          #   __attribute__((no_sanitize("null")))
+          # clang r383902 不支持该属性，在 -Werror=attributes 下直接编译失败
+          # （mm/memcontrol.o 首次触发）。makingrom 的 build.sh 同样使用
+          # KCFLAGS="-w" 来构建此树，属该源码的既定做法。
+          # 注意不要换成 -Wno-xxx 形式：clang 不认识的 GCC 专用警告名会被
+          # CLANG_FLAGS += -Werror=unknown-warning-option 升级为错误，
+          # 反而导致 cc-option 能力探测失败。
           set +e
-          make -j$(nproc) O=out ARCH=arm64 Image.gz-dtb > /tmp/build.log 2>&1
+          make -j$(nproc) O=out ARCH=arm64 KCFLAGS="-w" \
+            CROSS_COMPILE="${XCOMPILE64}" \
+            CROSS_COMPILE_ARM32="${XCOMPILE32}" \
+            Image.gz-dtb > /tmp/build.log 2>&1
           RC=$?
           set -e
 
@@ -203,11 +215,14 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-androidkernel-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CROSS_COMPILE="${XCOMPILE64}"
+          export CROSS_COMPILE_ARM32="${XCOMPILE32}"
 
           set +e
-          make -j$(nproc) O=out ARCH=arm64 modules > /tmp/modules.log 2>&1
+          make -j$(nproc) O=out ARCH=arm64 KCFLAGS="-w" \
+            CROSS_COMPILE="${XCOMPILE64}" \
+            CROSS_COMPILE_ARM32="${XCOMPILE32}" \
+            modules > /tmp/modules.log 2>&1
           RC=$?
           set -e
           tail -15 /tmp/modules.log
