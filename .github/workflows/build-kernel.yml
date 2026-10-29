@@ -279,10 +279,19 @@ jobs:
           IMG=out/arch/arm64/boot/Image.gz-dtb
 
           echo "=== 解压检查 vermagic ==="
-          gunzip -c "$IMG" > /tmp/Image.raw
+          # 注意：Image.gz-dtb 的 gzip 流之后还跟着附加 DTB，
+          # gunzip 会报 "trailing garbage ignored" 并以 2 退出。
+          # 这是预期行为，不能让 set -e 把它当失败。
+          set +e
+          gunzip -c "$IMG" > /tmp/Image.raw 2>/tmp/gunzip.err
+          set -e
+          if [ ! -s /tmp/Image.raw ]; then
+            echo "::error::解压内核失败"; cat /tmp/gunzip.err; exit 1
+          fi
+          echo "解压后镜像大小: $(stat -c%s /tmp/Image.raw) 字节"
           grep -a -o -m3 "4\.14\.186[-a-zA-Z0-9_.]* SMP[^\"]*" /tmp/Image.raw || true
           echo "--- linux_banner ---"
-          grep -a -o -m1 "Linux version [0-9][^ ]*" /tmp/Image.raw
+          grep -a -o -m1 "Linux version [0-9][^ ]*" /tmp/Image.raw || true
 
           echo "=== 从镜像本体提取 config，确认 IPC ==="
           if [ -f scripts/extract-ikconfig ]; then
