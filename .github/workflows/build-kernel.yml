@@ -122,7 +122,14 @@ jobs:
           bash /tmp/lxc_open.sh "$CFG" -w
 
           echo "=== 补齐 SYSVIPC（该脚本清单未包含，但 IPC_NS 依赖它）==="
-          for opt in CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_IPC_NS CONFIG_NAMESPACES CONFIG_MULTIUSER; do
+          # 同时补齐 MTK 调度依赖链，否则编译必炸：
+          #   DEBUG_KERNEL=n -> SCHED_DEBUG=n -> MTK_SCHED_BOOST=n
+          #     -> task_struct 无 cpu_prefer 字段
+          #       -> task_turbo.c:59 (MTK_TASK_TURBO=y) 编译失败
+          # 这是 MGF defconfig 自身的缺陷：开了 MTK_TASK_TURBO 却没满足其依赖。
+          for opt in CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_IPC_NS CONFIG_NAMESPACES \
+                     CONFIG_MULTIUSER CONFIG_DEVTMPFS \
+                     CONFIG_DEBUG_KERNEL CONFIG_SCHED_DEBUG CONFIG_MTK_SCHED_BOOST; do
             if grep -q "^${opt}=" "$CFG"; then
               sed -i "s/^${opt}=.*/${opt}=y/" "$CFG"
             else
