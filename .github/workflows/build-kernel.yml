@@ -151,7 +151,9 @@ jobs:
           make ARCH=arm64 O=out olddefconfig
 
           echo "=== 依赖解析后的关键配置（决定性校验）==="
-          for k in SYSVIPC POSIX_MQUEUE IPC_NS NAMESPACES PID_NS UTS_NS NET_NS DEVTMPFS OVERLAY_FS; do
+          for k in SYSVIPC POSIX_MQUEUE IPC_NS NAMESPACES PID_NS UTS_NS NET_NS DEVTMPFS OVERLAY_FS \
+                   DEBUG_KERNEL SCHED_DEBUG CPUSETS SCHED_HMP DEFAULT_USE_ENERGY_AWARE \
+                   MTK_SCHED_BOOST MTK_TASK_TURBO; do
             v=$(grep -E "^CONFIG_${k}=" out/.config || echo "# CONFIG_${k} is not set")
             echo "$v"
           done
@@ -164,7 +166,13 @@ jobs:
             echo "::error::CONFIG_SYSVIPC 未生效"
             exit 1
           fi
-          echo "OK: IPC_NS + SYSVIPC 均生效"
+          # MTK_TASK_TURBO 的代码无条件引用 task_struct->cpu_prefer，
+          # 该字段仅在 MTK_SCHED_BOOST=y 时存在，必须确认依赖链闭合。
+          if ! grep -q "^CONFIG_MTK_SCHED_BOOST=y" out/.config; then
+            echo "::error::MTK_SCHED_BOOST 未生效（task_turbo 将编译失败）"
+            exit 1
+          fi
+          echo "OK: IPC_NS + SYSVIPC + MTK_SCHED_BOOST 均生效"
 
       - name: 编译内核与模块
         run: |
