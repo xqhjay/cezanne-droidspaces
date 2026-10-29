@@ -256,7 +256,7 @@ jobs:
           fi
 
           echo "=== 产物 ==="
-          ls -lh out/arch/arm64/boot/Image.gz-dtb
+          ls -lh out/arch/arm64/boot/Image.gz
 
       - name: 编译并收集模块
         run: |
