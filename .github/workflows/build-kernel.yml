@@ -98,6 +98,15 @@ jobs:
           git clone --depth 1 -b r \
             https://github.com/makingrom/android_kernel_xiaomi_cezanne.git kernel
           cd kernel
+
+          # 锁定 vermagic，必须与原厂内核完全一致，否则 /vendor/lib/modules
+          # 里的 OEM 预编译模块会因 version magic mismatch 拒绝加载
+          # （WiFi/蓝牙/GPS 等失效）。
+          # 原厂实测串：4.14.186-perf-00241-g172a9693e072
+          # 用 .scmversion 可绕过 setlocalversion 的 -g<sha>-dirty 推导
+          #（我们对源码打了补丁，工作树必然 dirty，会多出 -dirty 后缀）。
+          echo "-perf-00241-g172a9693e072" > .scmversion
+          echo "已写入 .scmversion: $(cat .scmversion)"
           echo "=== 源码版本 ==="
           head -5 Makefile
           echo "=== defconfig ==="
@@ -220,11 +229,17 @@ jobs:
           # 注意不要换成 -Wno-xxx 形式：clang 不认识的 GCC 专用警告名会被
           # CLANG_FLAGS += -Werror=unknown-warning-option 升级为错误，
           # 反而导致 cc-option 能力探测失败。
+          # 关键：构建 Image.gz 而非 Image.gz-dtb。
+          # 实测原厂 boot.img 的内核是「纯 gzip 流，尾部无 DTB」，
+          # 硬件描述由独立的 dtbo 分区提供（dtbo.img 内含 CEZANNE/MT6889 的 FDT）。
+          # 若用 Image.gz-dtb，会把 defconfig 里 APPENDED_DTB_IMAGE_NAMES
+          # 指定的 mediatek/mt6885 通用 DTB 塞进内核尾部，与 dtbo 分区的
+          # 机型 DTB 冲突 -> 上次刷机卡第一屏的真正原因。
           set +e
           make -j$(nproc) O=out ARCH=arm64 KCFLAGS="-w" \
             CROSS_COMPILE="${XCOMPILE64}" \
             CROSS_COMPILE_ARM32="${XCOMPILE32}" \
-            Image.gz-dtb > /tmp/build.log 2>&1
+            Image.gz > /tmp/build.log 2>&1
           RC=$?
           set -e
 
@@ -276,12 +291,9 @@ jobs:
         run: |
           set -e
           cd kernel
-          IMG=out/arch/arm64/boot/Image.gz-dtb
+          IMG=out/arch/arm64/boot/Image.gz
 
           echo "=== 解压检查 vermagic ==="
-          # 注意：Image.gz-dtb 的 gzip 流之后还跟着附加 DTB，
-          # gunzip 会报 "trailing garbage ignored" 并以 2 退出。
-          # 这是预期行为，不能让 set -e 把它当失败。
           set +e
           gunzip -c "$IMG" > /tmp/Image.raw 2>/tmp/gunzip.err
           set -e
@@ -289,37 +301,50 @@ jobs:
             echo "::error::解压内核失败"; cat /tmp/gunzip.err; exit 1
           fi
           echo "解压后镜像大小: $(stat -c%s /tmp/Image.raw) 字节"
-          grep -a -o -m3 "4\.14\.186[-a-zA-Z0-9_.]* SMP[^\"]*" /tmp/Image.raw || true
-          echo "--- linux_banner ---"
+          echo "--- linux_banner（必须与原厂一致）---"
           grep -a -o -m1 "Linux version [0-9][^ ]*" /tmp/Image.raw || true
+          echo "--- 完整 vermagic ---"
+          grep -a -o -m1 "4\.14\.186[A-Za-z0-9_.-]* SMP[^#]*" /tmp/Image.raw || true
+
+          echo "=== vermagic 强制校验 ==="
+          if grep -aq "4\.14\.186-perf-00241-g172a9693e072" /tmp/Image.raw; then
+            echo "OK: vermagic 与原厂一致"
+          else
+            echo "::error::vermagic 不等于原厂 4.14.186-perf-00241-g172a9693e072，OEM 模块会拒载"
+            grep -a -o -m1 "Linux version [0-9][^ ]*" /tmp/Image.raw || true
+            exit 1
+          fi
+          if grep -aq "\-dirty" /tmp/Image.raw; then
+            echo "::error::vermagic 含 -dirty 后缀"
+            exit 1
+          fi
 
           echo "=== 从镜像本体提取 config，确认 IPC ==="
           if [ -f scripts/extract-ikconfig ]; then
             sh scripts/extract-ikconfig /tmp/Image.raw > /tmp/extracted.config 2>/dev/null || true
             grep -E "^CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|NAMESPACES|DEVTMPFS)=" /tmp/extracted.config || echo "(提取失败，跳过)"
+            grep -q "^CONFIG_IPC_NS=y" /tmp/extracted.config || { echo "::error::镜像内 IPC_NS 未开启"; exit 1; }
+            echo "OK: 镜像内 CONFIG_IPC_NS=y"
           fi
 
-          echo "=== DTB 附加检查 ==="
+          echo "=== 产物 DTB 状态检查（应为无 DTB，与原厂一致）==="
           python3 - <<'PY'
-          d=open('/tmp/Image.raw','rb').read()
-          m=b'\xd0\x0d\xfe\xed'
-          i=d.find(m)
-          print('DTB 在解压镜像内:', i)
-          g=open('out/arch/arm64/boot/Image.gz-dtb','rb').read()
-          j=g.find(m)
-          if j>0:
-              t=int.from_bytes(g[j+4:j+8],'big')
-              print(f'gz-dtb 文件内 DTB @ {j}, size={t}, 到末尾={j+t==len(g)}')
+          m = b'\xd0\x0d\xfe\xed'
+          g = open('out/arch/arm64/boot/Image.gz', 'rb').read()
+          j = g.find(m)
+          if j < 0:
+              print('OK: Image.gz 无附加 DTB（与原厂一致，DTB 由 dtbo 分区提供）')
           else:
-              print('gz-dtb 文件内无 DTB（纯 Image.gz）')
+              t = int.from_bytes(g[j+4:j+8], 'big')
+              print(f'警告: Image.gz 内检测到 DTB @ {j}, size={t}')
+              raise SystemExit(1)
           PY
 
-      - name: 上传内核与模块
+      - name: 上传内核
         uses: actions/upload-artifact@v4
         with:
           name: cezanne-lxc-kernel
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz-dtb
+          path: kernel/out/arch/arm64/boot/Image.gz
           if-no-files-found: error
           retention-days: 30
 
